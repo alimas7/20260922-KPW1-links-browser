@@ -23,7 +23,7 @@ jobs:
 
     - name: Download and Statically Build Modern OpenSSL
       run: |
-        curl -sL https://www.openssl.org/source/openssl-1.1.1w.tar.gz | tar xf -
+        curl -sL https://www.openssl.org/source/openssl-1.1.1w.tar.gz | tar xfz -
         cd openssl-1.1.1w
         export CC=arm-linux-gnueabi-gcc
         ./Configure linux-armv4 -march=armv7-a -mtune=cortex-a8 -mfloat-abi=softfp no-shared no-tests --prefix=$GITHUB_WORKSPACE/openssl-static
@@ -32,7 +32,7 @@ jobs:
 
     - name: Fetch Official Links Source Code
       run: |
-        curl -sL http://links.twibright.com/download/links-2.30.tar.gz | tar xf -
+        curl -sL http://links.twibright.com/download/links-2.30.tar.gz | tar xfz -
         mv links-2.30 links-src
 
     - name: Configure and Statically Link Browser Engine
