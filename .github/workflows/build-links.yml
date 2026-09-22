@@ -9,7 +9,7 @@ on:
 
 jobs:
   build-links-tls:
-    runs-name: Cross-Compile Links Browser with Static TLS 1.2+
+    name: Cross-Compile Links Browser with Static TLS 1.2+
     runs-on: ubuntu-22.04
 
     steps:
