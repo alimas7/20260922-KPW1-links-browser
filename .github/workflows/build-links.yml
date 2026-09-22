@@ -46,8 +46,8 @@ jobs:
         
         ./configure \
           --host=arm-linux-gnueabi \
-          --enable-graphics \
-          --with-fb \
+          # --enable-graphics \
+          # --with-fb \
           --without-x \
           --disable-javascript \
           --with-ssl
