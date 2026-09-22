@@ -23,7 +23,7 @@ jobs:
 
     - name: Download and Statically Build Modern OpenSSL
       run: |
-        curl -s https://www.openssl.org/source/openssl-1.1.1w.tar.gz | tar xf
+        curl -s https://www.openssl.org/source/openssl-1.1.1w.tar.gz | tar xf -
         cd openssl-1.1.1w
         export CC=arm-linux-gnueabi-gcc
         ./Configure linux-armv4 -march=armv7-a -mtune=cortex-a8 -mfloat-abi=softfp no-shared no-tests --prefix=$GITHUB_WORKSPACE/openssl-static
