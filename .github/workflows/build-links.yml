@@ -1,4 +1,4 @@
-name: Build Kindle KPW1 Links Browser (static musl + TLS)
+name: Build Kindle KPW1 Links Browser (static musl + TLS 1.2)
 
 on:
   workflow_dispatch:
@@ -8,30 +8,29 @@ permissions:
 
 jobs:
   build-links:
-    name: Build ARMv7 soft-float Links for KPW1
+    name: Build static ARMv7 soft-float Links for KPW1
     runs-on: ubuntu-22.04
 
     env:
-      # Sources
       OPENSSL_VERSION: 1.1.1w
       LINKS_VERSION: "2.30"
 
-      # Build locations
+      TARGET: arm-linux-musleabi
       PREFIX: ${{ github.workspace }}/stage
       TOOLCHAIN_DIR: ${{ github.workspace }}/toolchain
 
-      # KPW1: 32-bit ARM, soft-float EABI.
-      TARGET: arm-linux-musleabi
+      # KPW1: ARMv7-class CPU, soft-float EABI userspace.
       ARCH_FLAGS: -march=armv7-a -mtune=cortex-a8 -mfloat-abi=softfp
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install build prerequisites
+      - name: Install build dependencies
         shell: bash
         run: |
           set -euxo pipefail
+
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
@@ -41,67 +40,93 @@ jobs:
             make \
             perl \
             pkg-config \
+            python3 \
             tar \
-            xz-utils
+            unzip \
+            xz-utils \
+            zip
 
-      - name: Download ARM musl cross-toolchain
+      - name: Download ARM soft-float musl cross-toolchain
         shell: bash
         run: |
           set -euxo pipefail
 
-          # musl.cc toolchains are static cross toolchains.
-          # The target is ARM EABI soft-float, NOT musleabihf.
-          curl --fail --location --retry 3 \
-            --output arm-linux-musleabi-cross.tgz \
-            https://musl.cc/arm-linux-musleabi-cross.tgz
+          # GitHub-hosted mirror: avoids musl.cc connection stalls on
+          # GitHub-hosted Actions runners.
+          TOOLCHAIN_URL="https://github.com/userdocs/qbt-musl-cross-make/releases/latest/download/arm-linux-musleabi.tar.xz"
+
+          curl --fail --location \
+            --retry 5 \
+            --retry-all-errors \
+            --connect-timeout 30 \
+            --max-time 900 \
+            --output arm-linux-musleabi.tar.xz \
+            "$TOOLCHAIN_URL"
 
           mkdir -p "$TOOLCHAIN_DIR"
-          tar -xzf arm-linux-musleabi-cross.tgz -C "$TOOLCHAIN_DIR"
+          tar -xJf arm-linux-musleabi.tar.xz -C "$TOOLCHAIN_DIR"
 
-          # The archive normally expands to:
-          # toolchain/arm-linux-musleabi-cross/
-          test -x "$TOOLCHAIN_DIR/arm-linux-musleabi-cross/bin/arm-linux-musleabi-gcc"
+          CC_PATH="$(
+            find "$TOOLCHAIN_DIR" -type f \
+              -path '*/bin/arm-linux-musleabi-gcc' \
+              -print -quit
+          )"
 
-          echo "$TOOLCHAIN_DIR/arm-linux-musleabi-cross/bin" >> "$GITHUB_PATH"
+          test -n "$CC_PATH"
+          test -x "$CC_PATH"
 
-      - name: Verify cross-toolchain
+          TOOLCHAIN_BIN="$(dirname "$CC_PATH")"
+          echo "$TOOLCHAIN_BIN" >> "$GITHUB_PATH"
+
+      - name: Verify musl cross-toolchain
         shell: bash
         run: |
           set -euxo pipefail
 
+          command -v arm-linux-musleabi-gcc
           arm-linux-musleabi-gcc --version
-          arm-linux-musleabi-gcc -dumpmachine
 
           test "$(arm-linux-musleabi-gcc -dumpmachine)" = "arm-linux-musleabi"
 
           cat > hello.c <<'EOF'
           #include <stdio.h>
+
           int main(void) {
-              puts("KPW1 musl test");
+              puts("KPW1 static musl test");
               return 0;
           }
           EOF
 
           arm-linux-musleabi-gcc \
-            $ARCH_FLAGS \
+            -march=armv7-a \
+            -mtune=cortex-a8 \
+            -mfloat-abi=softfp \
             -static \
             -Os \
-            -s \
             hello.c \
             -o hello-arm-musl
 
           file hello-arm-musl
 
-          # It must be statically linked and ARM ELF.
-          ! readelf -l hello-arm-musl | grep -q 'Requesting program interpreter'
-          readelf -h hello-arm-musl | grep -E 'Class:|Machine:'
+          arm-linux-musleabi-readelf -h hello-arm-musl | \
+            grep -E 'Class:|Machine:'
+
+          if arm-linux-musleabi-readelf -l hello-arm-musl | \
+            grep -q 'Requesting program interpreter'; then
+            echo "ERROR: hello-arm-musl is dynamically linked."
+            exit 1
+          fi
 
       - name: Download and build static OpenSSL
         shell: bash
         run: |
           set -euxo pipefail
 
-          curl --fail --location --retry 3 \
+          curl --fail --location \
+            --retry 5 \
+            --retry-all-errors \
+            --connect-timeout 30 \
+            --max-time 900 \
             --output "openssl-${OPENSSL_VERSION}.tar.gz" \
             "https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz"
 
@@ -118,9 +143,6 @@ jobs:
           export CFLAGS="-Os -fdata-sections -ffunction-sections ${ARCH_FLAGS}"
           export LDFLAGS="-static -Wl,--gc-sections"
 
-          # linux-armv4 is OpenSSL's ARM Linux target.
-          # no-shared ensures libssl.a and libcrypto.a are built.
-          # no-tests avoids attempting to execute ARM test binaries on x86_64 CI.
           ./Configure linux-armv4 \
             no-shared \
             no-tests \
@@ -142,7 +164,11 @@ jobs:
         run: |
           set -euxo pipefail
 
-          curl --fail --location --retry 3 \
+          curl --fail --location \
+            --retry 5 \
+            --retry-all-errors \
+            --connect-timeout 30 \
+            --max-time 900 \
             --output "links-${LINKS_VERSION}.tar.gz" \
             "http://links.twibright.com/download/links-${LINKS_VERSION}.tar.gz"
 
@@ -159,24 +185,18 @@ jobs:
           export AR="${TARGET}-ar"
           export RANLIB="${TARGET}-ranlib"
           export STRIP="${TARGET}-strip"
-          export PKG_CONFIG=/usr/bin/pkg-config
 
-          # Avoid host .pc metadata leaking into the cross-build.
+          # Do not let pkg-config find x86_64 runner libraries.
           export PKG_CONFIG_DIR=""
           export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
 
-          # OpenSSL headers and static libraries built in the prior step.
           export CPPFLAGS="-I$PREFIX/include"
           export CFLAGS="-Os -fdata-sections -ffunction-sections $ARCH_FLAGS"
           export LDFLAGS="-static -Wl,--gc-sections -L$PREFIX/lib"
-
-          # Explicitly provide static OpenSSL libraries. The order matters:
-          # ssl uses crypto, so ssl precedes crypto.
           export LIBS="-lssl -lcrypto -lpthread -ldl"
 
-          # Text mode only: no libpng, no framebuffer/X/SDL requirements.
-          # --build is the GitHub runner; --host is the Kindle target.
+          # Text-mode only: deliberately no --enable-graphics and no --with-fb.
           ./configure \
             --build="$(gcc -dumpmachine)" \
             --host="$TARGET" \
@@ -186,11 +206,9 @@ jobs:
             --with-ssl
 
           make -j"$(nproc)"
-
-          # Do not run `make check`: it would try to run ARM code on x86_64.
           "$STRIP" links
 
-      - name: Verify produced Links executable
+      - name: Verify Links output
         shell: bash
         run: |
           set -euxo pipefail
@@ -199,24 +217,19 @@ jobs:
 
           test -f "$BIN"
           file "$BIN"
-          "${TARGET}-readelf" -h "$BIN" | grep -E 'Class:|Machine:'
-          "${TARGET}-readelf" -l "$BIN"
 
-          # A static binary must have no ELF program interpreter.
-          if "${TARGET}-readelf" -l "$BIN" | grep -q "Requesting program interpreter"; then
-            echo "ERROR: links is dynamically linked; refusing to package it."
+          "${TARGET}-readelf" -h "$BIN" | \
+            grep -E 'Class:|Machine:'
+
+          if "${TARGET}-readelf" -l "$BIN" | \
+            grep -q 'Requesting program interpreter'; then
+            echo "ERROR: Links is dynamically linked."
             exit 1
           fi
 
-          # The dynamic section should normally be absent in a static binary.
-          # `readelf -d` exits non-zero for a binary with no dynamic section,
-          # hence `|| true`.
-          "${TARGET}-readelf" -d "$BIN" 2>/dev/null || true
-
-          # Display output size as a CI diagnostic.
           ls -lh "$BIN"
 
-      - name: Create KUAL extension bundle
+      - name: Package KUAL extension
         shell: bash
         run: |
           set -euxo pipefail
@@ -224,9 +237,9 @@ jobs:
           EXT="dist/extensions/links_browser"
 
           mkdir -p "$EXT/bin"
+
           cp links-src/links "$EXT/bin/links"
 
-          # These files must exist in your repository.
           test -f extensions/links_browser/config.xml
           test -f extensions/links_browser/menu.json
           test -f extensions/links_browser/bin/run.sh
@@ -235,23 +248,19 @@ jobs:
           cp extensions/links_browser/menu.json "$EXT/menu.json"
           cp extensions/links_browser/bin/run.sh "$EXT/bin/run.sh"
 
-          # Validate JSON before publishing.
           python3 -m json.tool "$EXT/menu.json" >/dev/null
 
-          # Permissions are meaningful inside the artifact/Linux build tree.
-          # FAT /mnt/us on the Kindle does not preserve per-file Unix modes.
+          # This matters in the CI artifact. FAT on the Kindle will synthesize
+          # permissions, so KUAL should invoke run.sh through /bin/sh.
           chmod 755 "$EXT/bin/links" "$EXT/bin/run.sh"
 
-          echo "Packaged files:"
           find dist -type f -printf '%p  %s bytes\n'
 
-      - name: Archive KUAL extension
+      - name: Create installable ZIP
         shell: bash
         run: |
           set -euxo pipefail
 
-          # Zip only the `extensions` directory, preserving the expected
-          # top-level layout when the user extracts at the Kindle USB root.
           cd dist
           zip -r ../kindle-links-kpw1.zip extensions
 
