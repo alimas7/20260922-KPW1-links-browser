@@ -1,0 +1,10 @@
+{
+  "items": [
+    {
+      "name": "Text Web Browser (Links)",
+      "priority": 5,
+      "action": "bin/run.sh",
+      "type": "cmd"
+    }
+  ]
+}
