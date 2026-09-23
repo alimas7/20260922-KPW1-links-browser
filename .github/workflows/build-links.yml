@@ -54,7 +54,7 @@ jobs:
           # The release assets include the host prefix. GitHub's Linux runners
           # are x86_64, but this toolchain release calls the portable host asset
           # aarch64-arm-linux-musleabi.tar.xz.
-          TOOLCHAIN_URL="https://github.com/userdocs/qbt-musl-cross-make/releases/latest/download/aarch64-arm-linux-musleabi.tar.xz"
+          TOOLCHAIN_URL="https://github.com/userdocs/qbt-musl-cross-make/releases/latest/download/x86_64-arm-linux-musleabi.tar.xz"
 
           curl --fail --location \
             --retry 5 \
