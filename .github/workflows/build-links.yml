@@ -15,11 +15,13 @@ jobs:
       OPENSSL_VERSION: 1.1.1w
       LINKS_VERSION: "2.30"
 
+      # KPW1 target ABI: 32-bit ARM Linux, EABI soft-float.
       TARGET: arm-linux-musleabi
+
       PREFIX: ${{ github.workspace }}/stage
       TOOLCHAIN_DIR: ${{ github.workspace }}/toolchain
 
-      # KPW1: ARMv7-class CPU and soft-float EABI.
+      # KPW1 is ARMv7-class. Do not use armv8 or hard-float flags.
       ARCH_FLAGS: -march=armv7-a -mtune=cortex-a8 -mfloat-abi=softfp
 
     steps:
@@ -46,14 +48,13 @@ jobs:
             xz-utils \
             zip
 
-      - name: Download ARM soft-float musl cross-toolchain
+      - name: Download x86_64-hosted ARM musl toolchain
         shell: bash
         run: |
           set -euxo pipefail
 
-          # The release assets include the host prefix. GitHub's Linux runners
-          # are x86_64, but this toolchain release calls the portable host asset
-          # aarch64-arm-linux-musleabi.tar.xz.
+          # x86_64 is the GitHub runner host.
+          # arm-linux-musleabi is the Kindle output target.
           TOOLCHAIN_URL="https://github.com/userdocs/qbt-musl-cross-make/releases/latest/download/x86_64-arm-linux-musleabi.tar.xz"
 
           curl --fail --location \
@@ -66,9 +67,6 @@ jobs:
 
           mkdir -p "$TOOLCHAIN_DIR"
           tar -xJf arm-linux-musleabi-toolchain.tar.xz -C "$TOOLCHAIN_DIR"
-
-          echo "Toolchain contents:"
-          find "$TOOLCHAIN_DIR" -maxdepth 4 -type f -name '*-gcc' -print
 
           CC_PATH="$(
             find "$TOOLCHAIN_DIR" -type f \
@@ -117,11 +115,11 @@ jobs:
 
           if arm-linux-musleabi-readelf -l hello-arm-musl | \
             grep -q 'Requesting program interpreter'; then
-            echo "ERROR: hello-arm-musl is dynamically linked."
+            echo "ERROR: test binary is dynamically linked."
             exit 1
           fi
 
-      - name: Download and build static OpenSSL
+      - name: Download and build static OpenSSL 1.1.1w
         shell: bash
         run: |
           set -euxo pipefail
@@ -152,3 +150,138 @@ jobs:
             no-tests \
             no-async \
             no-engine \
+            no-dso \
+            --prefix="$PREFIX" \
+            --openssldir="$PREFIX/ssl"
+
+          make -j"$(nproc)"
+          make install_sw
+
+          test -f "$PREFIX/lib/libssl.a"
+          test -f "$PREFIX/lib/libcrypto.a"
+          test -f "$PREFIX/include/openssl/ssl.h"
+
+      - name: Download Links 2.30 source
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          curl --fail --location \
+            --retry 5 \
+            --retry-all-errors \
+            --connect-timeout 30 \
+            --max-time 900 \
+            --output "links-${LINKS_VERSION}.tar.gz" \
+            "http://links.twibright.com/download/links-${LINKS_VERSION}.tar.gz"
+
+          tar -xzf "links-${LINKS_VERSION}.tar.gz"
+          mv "links-${LINKS_VERSION}" links-src
+
+      - name: Configure and build static text-mode Links
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd links-src
+
+          export CC="${TARGET}-gcc"
+          export AR="${TARGET}-ar"
+          export RANLIB="${TARGET}-ranlib"
+          export STRIP="${TARGET}-strip"
+
+          # Prevent host x86_64 pkg-config metadata/libraries leaking in.
+          export PKG_CONFIG_DIR=""
+          export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
+          export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
+
+          export CPPFLAGS="-I$PREFIX/include"
+          export CFLAGS="-Os -fdata-sections -ffunction-sections $ARCH_FLAGS"
+          export LDFLAGS="-static -Wl,--gc-sections -L$PREFIX/lib"
+          export LIBS="-lssl -lcrypto -lpthread -ldl"
+
+          # Text-only build: no graphics, framebuffer, libpng, X11, or SDL.
+          ./configure \
+            --build="$(gcc -dumpmachine)" \
+            --host="$TARGET" \
+            --without-x \
+            --without-sdl \
+            --disable-javascript \
+            --with-ssl
+
+          make -j"$(nproc)"
+          "$STRIP" links
+
+      - name: Verify Links binary
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          BIN="links-src/links"
+
+          test -f "$BIN"
+          file "$BIN"
+
+          "${TARGET}-readelf" -h "$BIN" | \
+            grep -E 'Class:|Machine:'
+
+          if "${TARGET}-readelf" -l "$BIN" | \
+            grep -q 'Requesting program interpreter'; then
+            echo "ERROR: links is dynamically linked."
+            exit 1
+          fi
+
+          ls -lh "$BIN"
+
+      - name: Package KUAL extension
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          EXT="dist/extensions/links_browser"
+
+          mkdir -p "$EXT/bin"
+
+          cp links-src/links "$EXT/bin/links"
+
+          # These must exist in your repository.
+          test -f extensions/links_browser/config.xml
+          test -f extensions/links_browser/menu.json
+          test -f extensions/links_browser/bin/run.sh
+
+          cp extensions/links_browser/config.xml "$EXT/config.xml"
+          cp extensions/links_browser/menu.json "$EXT/menu.json"
+          cp extensions/links_browser/bin/run.sh "$EXT/bin/run.sh"
+
+          python3 -m json.tool "$EXT/menu.json" >/dev/null
+
+          chmod 755 "$EXT/bin/links" "$EXT/bin/run.sh"
+
+          echo "Packaged extension:"
+          find dist -type f -printf '%p  %s bytes\n'
+
+      - name: Create installable Kindle ZIP
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          test -f dist/extensions/links_browser/config.xml
+          test -f dist/extensions/links_browser/menu.json
+          test -f dist/extensions/links_browser/bin/links
+          test -f dist/extensions/links_browser/bin/run.sh
+
+          cd dist
+          zip -r ../kindle-links-kpw1.zip extensions
+
+          cd ..
+          ls -lh kindle-links-kpw1.zip
+          unzip -l kindle-links-kpw1.zip
+
+      - name: Upload KPW1 Links artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kindle-links-kpw1
+          path: |
+            dist/extensions/
+            kindle-links-kpw1.zip
+          if-no-files-found: error
+          retention-days: 14
