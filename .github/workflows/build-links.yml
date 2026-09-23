@@ -15,13 +15,13 @@ jobs:
       OPENSSL_VERSION: 1.1.1w
       LINKS_VERSION: "2.30"
 
-      # KPW1 target ABI: 32-bit ARM Linux, EABI soft-float.
+      # KPW1 target: 32-bit ARM Linux, soft-float EABI.
       TARGET: arm-linux-musleabi
 
       PREFIX: ${{ github.workspace }}/stage
       TOOLCHAIN_DIR: ${{ github.workspace }}/toolchain
 
-      # KPW1 is ARMv7-class. Do not use armv8 or hard-float flags.
+      # The original Paperwhite uses an ARMv7-class CPU.
       ARCH_FLAGS: -march=armv7-a -mtune=cortex-a8 -mfloat-abi=softfp
 
     steps:
@@ -48,13 +48,13 @@ jobs:
             xz-utils \
             zip
 
-      - name: Download x86_64-hosted ARM musl toolchain
+      - name: Download x86_64-hosted ARM soft-float musl toolchain
         shell: bash
         run: |
           set -euxo pipefail
 
-          # x86_64 is the GitHub runner host.
-          # arm-linux-musleabi is the Kindle output target.
+          # Host architecture: x86_64 GitHub Ubuntu runner.
+          # Target architecture: arm-linux-musleabi for the Kindle.
           TOOLCHAIN_URL="https://github.com/userdocs/qbt-musl-cross-make/releases/latest/download/x86_64-arm-linux-musleabi.tar.xz"
 
           curl --fail --location \
@@ -115,7 +115,7 @@ jobs:
 
           if arm-linux-musleabi-readelf -l hello-arm-musl | \
             grep -q 'Requesting program interpreter'; then
-            echo "ERROR: test binary is dynamically linked."
+            echo "ERROR: hello-arm-musl is dynamically linked."
             exit 1
           fi
 
@@ -135,7 +135,12 @@ jobs:
           tar -xzf "openssl-${OPENSSL_VERSION}.tar.gz"
           cd "openssl-${OPENSSL_VERSION}"
 
-          export CROSS_COMPILE="${TARGET}-"
+          # Critical: OpenSSL's linux-armv4 target uses CROSS_COMPILE
+          # internally. Leaving CROSS_COMPILE set while CC is already
+          # arm-linux-musleabi-gcc creates:
+          # arm-linux-musleabi-arm-linux-musleabi-gcc
+          unset CROSS_COMPILE
+
           export CC="${TARGET}-gcc"
           export AR="${TARGET}-ar"
           export RANLIB="${TARGET}-ranlib"
@@ -189,7 +194,8 @@ jobs:
           export RANLIB="${TARGET}-ranlib"
           export STRIP="${TARGET}-strip"
 
-          # Prevent host x86_64 pkg-config metadata/libraries leaking in.
+          # Ensure the configure test never accidentally picks up x86_64
+          # packages from the GitHub Actions runner.
           export PKG_CONFIG_DIR=""
           export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
@@ -199,7 +205,10 @@ jobs:
           export LDFLAGS="-static -Wl,--gc-sections -L$PREFIX/lib"
           export LIBS="-lssl -lcrypto -lpthread -ldl"
 
-          # Text-only build: no graphics, framebuffer, libpng, X11, or SDL.
+          # Text mode only:
+          # - no --enable-graphics
+          # - no --with-fb
+          # - therefore no target libpng requirement
           ./configure \
             --build="$(gcc -dumpmachine)" \
             --host="$TARGET" \
@@ -211,7 +220,7 @@ jobs:
           make -j"$(nproc)"
           "$STRIP" links
 
-      - name: Verify Links binary
+      - name: Verify produced Links binary
         shell: bash
         run: |
           set -euxo pipefail
@@ -224,6 +233,7 @@ jobs:
           "${TARGET}-readelf" -h "$BIN" | \
             grep -E 'Class:|Machine:'
 
+          # A static binary must not request a dynamic ELF interpreter.
           if "${TARGET}-readelf" -l "$BIN" | \
             grep -q 'Requesting program interpreter'; then
             echo "ERROR: links is dynamically linked."
@@ -243,7 +253,7 @@ jobs:
 
           cp links-src/links "$EXT/bin/links"
 
-          # These must exist in your repository.
+          # The following three files must already exist in your repository.
           test -f extensions/links_browser/config.xml
           test -f extensions/links_browser/menu.json
           test -f extensions/links_browser/bin/run.sh
@@ -254,9 +264,11 @@ jobs:
 
           python3 -m json.tool "$EXT/menu.json" >/dev/null
 
+          # Mode will not persist on Kindle FAT storage, but record a normal
+          # executable mode in the generated archive anyway.
           chmod 755 "$EXT/bin/links" "$EXT/bin/run.sh"
 
-          echo "Packaged extension:"
+          echo "Packaged extension files:"
           find dist -type f -printf '%p  %s bytes\n'
 
       - name: Create installable Kindle ZIP
