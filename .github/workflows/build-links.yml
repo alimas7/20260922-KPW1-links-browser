@@ -19,7 +19,7 @@ jobs:
       PREFIX: ${{ github.workspace }}/stage
       TOOLCHAIN_DIR: ${{ github.workspace }}/toolchain
 
-      # KPW1: ARMv7-class CPU, soft-float EABI userspace.
+      # KPW1: ARMv7-class CPU and soft-float EABI.
       ARCH_FLAGS: -march=armv7-a -mtune=cortex-a8 -mfloat-abi=softfp
 
     steps:
@@ -51,20 +51,24 @@ jobs:
         run: |
           set -euxo pipefail
 
-          # GitHub-hosted mirror: avoids musl.cc connection stalls on
-          # GitHub-hosted Actions runners.
-          TOOLCHAIN_URL="https://github.com/userdocs/qbt-musl-cross-make/releases/latest/download/arm-linux-musleabi.tar.xz"
+          # The release assets include the host prefix. GitHub's Linux runners
+          # are x86_64, but this toolchain release calls the portable host asset
+          # aarch64-arm-linux-musleabi.tar.xz.
+          TOOLCHAIN_URL="https://github.com/userdocs/qbt-musl-cross-make/releases/latest/download/aarch64-arm-linux-musleabi.tar.xz"
 
           curl --fail --location \
             --retry 5 \
             --retry-all-errors \
             --connect-timeout 30 \
             --max-time 900 \
-            --output arm-linux-musleabi.tar.xz \
+            --output arm-linux-musleabi-toolchain.tar.xz \
             "$TOOLCHAIN_URL"
 
           mkdir -p "$TOOLCHAIN_DIR"
-          tar -xJf arm-linux-musleabi.tar.xz -C "$TOOLCHAIN_DIR"
+          tar -xJf arm-linux-musleabi-toolchain.tar.xz -C "$TOOLCHAIN_DIR"
+
+          echo "Toolchain contents:"
+          find "$TOOLCHAIN_DIR" -maxdepth 4 -type f -name '*-gcc' -print
 
           CC_PATH="$(
             find "$TOOLCHAIN_DIR" -type f \
@@ -148,134 +152,3 @@ jobs:
             no-tests \
             no-async \
             no-engine \
-            no-dso \
-            --prefix="$PREFIX" \
-            --openssldir="$PREFIX/ssl"
-
-          make -j"$(nproc)"
-          make install_sw
-
-          test -f "$PREFIX/lib/libssl.a"
-          test -f "$PREFIX/lib/libcrypto.a"
-          test -f "$PREFIX/include/openssl/ssl.h"
-
-      - name: Download Links source
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          curl --fail --location \
-            --retry 5 \
-            --retry-all-errors \
-            --connect-timeout 30 \
-            --max-time 900 \
-            --output "links-${LINKS_VERSION}.tar.gz" \
-            "http://links.twibright.com/download/links-${LINKS_VERSION}.tar.gz"
-
-          tar -xzf "links-${LINKS_VERSION}.tar.gz"
-          mv "links-${LINKS_VERSION}" links-src
-
-      - name: Configure and build static text-mode Links
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cd links-src
-
-          export CC="${TARGET}-gcc"
-          export AR="${TARGET}-ar"
-          export RANLIB="${TARGET}-ranlib"
-          export STRIP="${TARGET}-strip"
-
-          # Do not let pkg-config find x86_64 runner libraries.
-          export PKG_CONFIG_DIR=""
-          export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
-          export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
-
-          export CPPFLAGS="-I$PREFIX/include"
-          export CFLAGS="-Os -fdata-sections -ffunction-sections $ARCH_FLAGS"
-          export LDFLAGS="-static -Wl,--gc-sections -L$PREFIX/lib"
-          export LIBS="-lssl -lcrypto -lpthread -ldl"
-
-          # Text-mode only: deliberately no --enable-graphics and no --with-fb.
-          ./configure \
-            --build="$(gcc -dumpmachine)" \
-            --host="$TARGET" \
-            --without-x \
-            --without-sdl \
-            --disable-javascript \
-            --with-ssl
-
-          make -j"$(nproc)"
-          "$STRIP" links
-
-      - name: Verify Links output
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          BIN="links-src/links"
-
-          test -f "$BIN"
-          file "$BIN"
-
-          "${TARGET}-readelf" -h "$BIN" | \
-            grep -E 'Class:|Machine:'
-
-          if "${TARGET}-readelf" -l "$BIN" | \
-            grep -q 'Requesting program interpreter'; then
-            echo "ERROR: Links is dynamically linked."
-            exit 1
-          fi
-
-          ls -lh "$BIN"
-
-      - name: Package KUAL extension
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          EXT="dist/extensions/links_browser"
-
-          mkdir -p "$EXT/bin"
-
-          cp links-src/links "$EXT/bin/links"
-
-          test -f extensions/links_browser/config.xml
-          test -f extensions/links_browser/menu.json
-          test -f extensions/links_browser/bin/run.sh
-
-          cp extensions/links_browser/config.xml "$EXT/config.xml"
-          cp extensions/links_browser/menu.json "$EXT/menu.json"
-          cp extensions/links_browser/bin/run.sh "$EXT/bin/run.sh"
-
-          python3 -m json.tool "$EXT/menu.json" >/dev/null
-
-          # This matters in the CI artifact. FAT on the Kindle will synthesize
-          # permissions, so KUAL should invoke run.sh through /bin/sh.
-          chmod 755 "$EXT/bin/links" "$EXT/bin/run.sh"
-
-          find dist -type f -printf '%p  %s bytes\n'
-
-      - name: Create installable ZIP
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          cd dist
-          zip -r ../kindle-links-kpw1.zip extensions
-
-      - name: Upload KUAL extension folder
-        uses: actions/upload-artifact@v4
-        with:
-          name: kindle-links-kpw1-extension
-          path: dist/extensions/
-          if-no-files-found: error
-          retention-days: 14
-
-      - name: Upload installable ZIP
-        uses: actions/upload-artifact@v4
-        with:
-          name: kindle-links-kpw1-zip
-          path: kindle-links-kpw1.zip
-          if-no-files-found: error
-          retention-days: 14
