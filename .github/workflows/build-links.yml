@@ -15,13 +15,13 @@ jobs:
       OPENSSL_VERSION: 1.1.1w
       LINKS_VERSION: "2.30"
 
-      # KPW1 target: 32-bit ARM Linux, soft-float EABI.
+      # KPW1 target ABI: 32-bit ARM Linux, soft-float EABI.
       TARGET: arm-linux-musleabi
 
       PREFIX: ${{ github.workspace }}/stage
       TOOLCHAIN_DIR: ${{ github.workspace }}/toolchain
 
-      # The original Paperwhite uses an ARMv7-class CPU.
+      # KPW1 is ARMv7-class and uses soft-float userspace.
       ARCH_FLAGS: -march=armv7-a -mtune=cortex-a8 -mfloat-abi=softfp
 
     steps:
@@ -53,8 +53,8 @@ jobs:
         run: |
           set -euxo pipefail
 
-          # Host architecture: x86_64 GitHub Ubuntu runner.
-          # Target architecture: arm-linux-musleabi for the Kindle.
+          # Host: GitHub ubuntu-22.04 runner (x86_64)
+          # Target: Kindle KPW1 (arm-linux-musleabi)
           TOOLCHAIN_URL="https://github.com/userdocs/qbt-musl-cross-make/releases/latest/download/x86_64-arm-linux-musleabi.tar.xz"
 
           curl --fail --location \
@@ -115,7 +115,7 @@ jobs:
 
           if arm-linux-musleabi-readelf -l hello-arm-musl | \
             grep -q 'Requesting program interpreter'; then
-            echo "ERROR: hello-arm-musl is dynamically linked."
+            echo "ERROR: test binary is dynamically linked."
             exit 1
           fi
 
@@ -135,10 +135,8 @@ jobs:
           tar -xzf "openssl-${OPENSSL_VERSION}.tar.gz"
           cd "openssl-${OPENSSL_VERSION}"
 
-          # Critical: OpenSSL's linux-armv4 target uses CROSS_COMPILE
-          # internally. Leaving CROSS_COMPILE set while CC is already
-          # arm-linux-musleabi-gcc creates:
-          # arm-linux-musleabi-arm-linux-musleabi-gcc
+          # Do not set CROSS_COMPILE: OpenSSL's linux-armv4 config internally
+          # prepends it to CC, producing a doubled tool prefix otherwise.
           unset CROSS_COMPILE
 
           export CC="${TARGET}-gcc"
@@ -194,8 +192,7 @@ jobs:
           export RANLIB="${TARGET}-ranlib"
           export STRIP="${TARGET}-strip"
 
-          # Ensure the configure test never accidentally picks up x86_64
-          # packages from the GitHub Actions runner.
+          # Prevent host x86_64 packages from contaminating the cross-build.
           export PKG_CONFIG_DIR=""
           export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig"
           export PKG_CONFIG_LIBDIR="$PREFIX/lib/pkgconfig"
@@ -205,10 +202,7 @@ jobs:
           export LDFLAGS="-static -Wl,--gc-sections -L$PREFIX/lib"
           export LIBS="-lssl -lcrypto -lpthread -ldl"
 
-          # Text mode only:
-          # - no --enable-graphics
-          # - no --with-fb
-          # - therefore no target libpng requirement
+          # Text-only Links: no graphics/libpng/X11/framebuffer/SDL.
           ./configure \
             --build="$(gcc -dumpmachine)" \
             --host="$TARGET" \
@@ -220,7 +214,7 @@ jobs:
           make -j"$(nproc)"
           "$STRIP" links
 
-      - name: Verify produced Links binary
+      - name: Verify Links binary
         shell: bash
         run: |
           set -euxo pipefail
@@ -233,7 +227,6 @@ jobs:
           "${TARGET}-readelf" -h "$BIN" | \
             grep -E 'Class:|Machine:'
 
-          # A static binary must not request a dynamic ELF interpreter.
           if "${TARGET}-readelf" -l "$BIN" | \
             grep -q 'Requesting program interpreter'; then
             echo "ERROR: links is dynamically linked."
@@ -241,6 +234,22 @@ jobs:
           fi
 
           ls -lh "$BIN"
+
+      - name: Download current CA certificate bundle
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          curl --fail --location \
+            --retry 5 \
+            --retry-all-errors \
+            --connect-timeout 30 \
+            --max-time 900 \
+            --output cacert.pem \
+            https://curl.se/ca/cacert.pem
+
+          test -s cacert.pem
+          grep -q -- 'BEGIN CERTIFICATE' cacert.pem
 
       - name: Package KUAL extension
         shell: bash
@@ -252,8 +261,8 @@ jobs:
           mkdir -p "$EXT/bin"
 
           cp links-src/links "$EXT/bin/links"
+          cp cacert.pem "$EXT/cacert.pem"
 
-          # The following three files must already exist in your repository.
           test -f extensions/links_browser/config.xml
           test -f extensions/links_browser/menu.json
           test -f extensions/links_browser/bin/run.sh
@@ -264,8 +273,6 @@ jobs:
 
           python3 -m json.tool "$EXT/menu.json" >/dev/null
 
-          # Mode will not persist on Kindle FAT storage, but record a normal
-          # executable mode in the generated archive anyway.
           chmod 755 "$EXT/bin/links" "$EXT/bin/run.sh"
 
           echo "Packaged extension files:"
@@ -278,6 +285,7 @@ jobs:
 
           test -f dist/extensions/links_browser/config.xml
           test -f dist/extensions/links_browser/menu.json
+          test -f dist/extensions/links_browser/cacert.pem
           test -f dist/extensions/links_browser/bin/links
           test -f dist/extensions/links_browser/bin/run.sh
 
